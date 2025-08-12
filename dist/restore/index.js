@@ -74967,19 +74967,58 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.saveCache = exports.downloadCache = exports.getCacheEntry = exports.getCacheVersion = void 0;
+const fs_1 = __nccwpck_require__(7147);
+const path_1 = __nccwpck_require__(1017);
 const core = __importStar(__nccwpck_require__(2186));
 const tos_sdk_1 = __nccwpck_require__(5235);
 const crypto = __importStar(__nccwpck_require__(6113));
 const utils = __importStar(__nccwpck_require__(4875));
 const versionSalt = "1.0";
-const bucket = process.env["BUCKET_NAME"];
 const repo = process.env["GITHUB_REPOSITORY"];
+// TODO(coolkiid): make it compatible with Windows machine.
+const credentialsPath = process.env["TOS_CREDENTIALS_PATH"] || "/etc/tos-credentials";
+/**
+ * Get TOS credentials from environment variable or file
+ * @param {string} key - the key of credentials
+ * @returns {string | undefined}
+ *  - returns value from environment variable if set.
+ *  - returns value from file if it is not empty.
+ *  - returns undefined when environment variable is not set AND
+ *      (credentials file does not exist (ENOENT) OR credentials file is empty).
+ * @throws {Error} when reading credentials file fails with non-ENOENT error.
+ */
+function getCredentials(key) {
+    if (process.env[`TOS_${key}`]) {
+        core.debug(`use TOS_${key} from environment variable.`);
+        return process.env[`TOS_${key}`];
+    }
+    const credentialsFile = (0, path_1.join)(credentialsPath, `TOS_${key}`);
+    try {
+        const value = (0, fs_1.readFileSync)(credentialsFile, "utf8").trim();
+        if (!value) {
+            core.warning(`a null value was read from the file: ${credentialsFile}`);
+            return undefined;
+        }
+        core.debug(`use TOS_${key} from file: ${credentialsFile}`);
+        return value;
+    }
+    catch (error) {
+        if (error.code === 'ENOENT') {
+            core.debug(`credentials file ${credentialsFile} not found`);
+            return undefined;
+        }
+        else {
+            core.error(`an error occurred when reading credentials file ${credentialsFile}`, error);
+            throw new Error(`Error loading credentials from file ${credentialsFile}: ${error.message}`);
+        }
+    }
+}
 function createObjectStorageClient() {
-    const endpoint = process.env["ENDPOINT"];
+    const endpoint = getCredentials("ENDPOINT");
     const opts = endpoint
         ? { endpoint: endpoint, secure: false }
         : { secure: true };
-    return new tos_sdk_1.TosClient(Object.assign({ accessKeyId: process.env["ACCESS_KEY"], accessKeySecret: process.env["SECRET_KEY"], region: process.env["REGION"] }, opts));
+    return new tos_sdk_1.TosClient(Object.assign({ accessKeyId: getCredentials("ACCESS_KEY"), accessKeySecret: getCredentials("SECRET_KEY"), region: getCredentials("REGION") }, opts));
 }
 function getCacheVersion(paths, compressionMethod, enableCrossOsArchive = false) {
     // don't pass changes upstream
@@ -75006,7 +75045,7 @@ function getPrimaryKeyCacheEntry(client, version, primaryKey) {
         const objectKey = `caches/${repo}/${primaryKey}`;
         try {
             yield client.headObject({
-                bucket: bucket,
+                bucket: getCredentials("BUCKET_NAME"),
                 key: objectKey
             });
             const entry = {
@@ -75030,7 +75069,7 @@ function getRestoreKeysCacheEntry(client, version, restoreKeys) {
             const prefix = `caches/${repo}/${key}`;
             try {
                 const { data } = yield client.listObjectsType2({
-                    bucket: bucket,
+                    bucket: getCredentials("BUCKET_NAME"),
                     prefix: prefix,
                     maxKeys: 100
                 });
@@ -75087,7 +75126,7 @@ function downloadCache(objectKey, archivePath, options) {
     return __awaiter(this, void 0, void 0, function* () {
         const client = createObjectStorageClient();
         yield client.getObjectToFile({
-            bucket: bucket,
+            bucket: getCredentials("BUCKET_NAME"),
             key: objectKey,
             filePath: archivePath
         });
@@ -75115,7 +75154,7 @@ function uploadFile(client, cacheId, archivePath, options) {
         try {
             const objectName = `caches/${repo}/${cacheId}`;
             yield client.putObjectFromFile({
-                bucket: bucket,
+                bucket: getCredentials("BUCKET_NAME"),
                 key: objectName,
                 filePath: archivePath
             });

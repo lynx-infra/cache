@@ -1,6 +1,8 @@
 // https://github.com/actions/toolkit/blob/main/packages/cache/src/cache.ts
 // 6c4e082c181a51609197e536ef5255a0c9baeef7
 
+import { readFileSync } from "fs"
+import { join } from "path";
 import * as core from "@actions/core";
 import { TosClient, TosClientError, TosServerError } from "@volcengine/tos-sdk";
 import * as crypto from "crypto";
@@ -12,19 +14,56 @@ import { ArtifactCacheEntry, InternalCacheOptions } from "./contracts.d";
 
 const versionSalt = "1.0";
 
-const bucket = process.env["BUCKET_NAME"];
 const repo = process.env["GITHUB_REPOSITORY"];
+// TODO(coolkiid): make it compatible with Windows machine.
+const credentialsPath = process.env["TOS_CREDENTIALS_PATH"] || "/etc/tos-credentials"
+
+/**
+ * Get TOS credentials from environment variable or file
+ * @param {string} key - the key of credentials
+ * @returns {string | undefined}
+ *  - returns value from environment variable if set.
+ *  - returns value from file if it is not empty.
+ *  - returns undefined when environment variable is not set AND 
+ *      (credentials file does not exist (ENOENT) OR credentials file is empty).
+ * @throws {Error} when reading credentials file fails with non-ENOENT error.
+ */
+function getCredentials(key: string): string | undefined {
+    if (process.env[`TOS_${key}`]) {
+        core.debug(`use TOS_${key} from environment variable.`);
+        return process.env[`TOS_${key}`] as string;
+    }
+
+    const credentialsFile = join(credentialsPath, `TOS_${key}`);
+    try {
+        const value = readFileSync(credentialsFile, "utf8").trim();
+        if (!value) {
+            core.warning(`a null value was read from the file: ${credentialsFile}`);
+            return undefined;
+        }
+        core.debug(`use TOS_${key} from file: ${credentialsFile}`);
+        return value;
+    } catch (error: any) {
+        if (error.code === 'ENOENT') {
+            core.debug(`credentials file ${credentialsFile} not found`);
+            return undefined;
+        } else {
+            core.error(`an error occurred when reading credentials file ${credentialsFile}`, error);
+            throw new Error(`Error loading credentials from file ${credentialsFile}: ${error.message}`);
+        }
+    }
+}
 
 function createObjectStorageClient(): TosClient {
-    const endpoint = process.env["ENDPOINT"];
+    const endpoint = getCredentials("ENDPOINT");
     const opts = endpoint
         ? { endpoint: endpoint, secure: false }
         : { secure: true };
 
     return new TosClient({
-        accessKeyId: process.env["ACCESS_KEY"] as string,
-        accessKeySecret: process.env["SECRET_KEY"] as string,
-        region: process.env["REGION"] as string,
+        accessKeyId: getCredentials("ACCESS_KEY") as string,
+        accessKeySecret: getCredentials("SECRET_KEY") as string,
+        region: getCredentials("REGION") as string,
         ...opts
     });
 }
@@ -65,7 +104,7 @@ async function getPrimaryKeyCacheEntry(
     const objectKey = `caches/${repo}/${primaryKey}`;
     try {
         await client.headObject({
-            bucket: bucket,
+            bucket: getCredentials("BUCKET_NAME") as string,
             key: objectKey
         });
         const entry: ArtifactCacheEntry = {
@@ -93,7 +132,7 @@ async function getRestoreKeysCacheEntry(
         const prefix = `caches/${repo}/${key}`;
         try {
             const { data } = await client.listObjectsType2({
-                bucket: bucket,
+                bucket: getCredentials("BUCKET_NAME") as string,
                 prefix: prefix,
                 maxKeys: 100
             });
@@ -168,7 +207,7 @@ export async function downloadCache(
 ): Promise<void> {
     const client = createObjectStorageClient();
     await client.getObjectToFile({
-        bucket: bucket,
+        bucket: getCredentials("BUCKET_NAME") as string,
         key: objectKey,
         filePath: archivePath
     });
@@ -198,7 +237,7 @@ async function uploadFile(
     try {
         const objectName = `caches/${repo}/${cacheId}`;
         await client.putObjectFromFile({
-            bucket: bucket,
+            bucket: getCredentials("BUCKET_NAME") as string,
             key: objectName,
             filePath: archivePath
         });
